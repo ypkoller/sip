@@ -62,6 +62,12 @@ prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+max_cpu_utilization: CPU share (0-1) above which the service counts as overloaded (default 0.9)
+service_unavailable: # new INVITEs and out-of-dialog OPTIONS get 503 while overloaded or shutting down
+  overload_retry_after: Retry-After sent while overloaded (default 10s)
+  shutdown_retry_after: Retry-After sent after SIGTERM/SIGINT, while calls drain (default 60s)
+  # 0 uses the default, a negative value sends the 503 without Retry-After.
+  # Calls in progress are not affected: re-INVITEs and in-dialog OPTIONS are still answered.
 psrpc: # optional gzip compression of psrpc bus payloads, see the compatibility note below
   compression:
     quality: gzip level 1-9. 0, the default, disables compression

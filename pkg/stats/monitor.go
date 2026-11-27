@@ -87,6 +87,7 @@ type Monitor struct {
 	transfersActive          *prometheus.GaugeVec
 
 	cpu            *hwstats.CPUStats
+	cpuSampled     atomic.Bool // set once the first CPU sample arrived
 	maxUtilization float64
 
 	metrics  []prometheus.Collector
@@ -100,6 +101,7 @@ func NewMonitor(conf *config.Config) (*Monitor, error) {
 		maxUtilization: conf.MaxCpuUtilization,
 	}
 	cpu, err := hwstats.NewCPUStats(func(idle float64) {
+		m.cpuSampled.Store(true)
 		if m.started.IsBroken() {
 			m.cpuLoad.Set(1 - idle/m.cpu.NumCPU())
 		}
@@ -371,6 +373,13 @@ func (m *Monitor) Health() HealthStatus {
 		return HealthUnderLoad
 	}
 	return HealthOK
+}
+
+// CPUSampled reports whether the CPU load was measured at least once. Before the
+// first sample, about a second after start, the idle CPU reads as zero and Health
+// reports HealthUnderLoad although the load is unknown.
+func (m *Monitor) CPUSampled() bool {
+	return m.cpuSampled.Load()
 }
 
 func (m *Monitor) IdleCPU() float64 {

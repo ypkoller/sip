@@ -75,6 +75,8 @@ type callManager struct {
 	getRoom         GetRoomFunc
 	preferredRegion func(wsURL string) *livekit.RegionInfo
 	sealer          sealer.Sealer
+	// health overrides mon.Health when deciding whether to refuse new calls. Tests set it.
+	health func() stats.HealthStatus
 
 	closing            core.Fuse
 	cmu                sync.RWMutex
