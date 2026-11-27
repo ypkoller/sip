@@ -51,7 +51,19 @@ const (
 	// allocated call can't inherit a port a peer is still sending stale media to.
 	DefaultRTPDrainingIdleTimeout = 30 * time.Second // release once no packets arrive for this long
 	DefaultRTPDrainingDuration    = 10 * time.Minute // hard cap on how long a port stays draining
+
+	// Retry-After sent with a 503 to a new INVITE or an out-of-dialog OPTIONS.
+	DefaultOverloadRetryAfter = 10 * time.Second // while the CPU is over max_cpu_utilization
+	DefaultShutdownRetryAfter = 60 * time.Second // while the service shuts down
 )
+
+// ServiceUnavailableConfig sets the Retry-After of the 503 that refuses new calls
+// while the service is overloaded or shutting down. Zero uses the default.
+// A negative value sends the 503 without a Retry-After header.
+type ServiceUnavailableConfig struct {
+	OverloadRetryAfter time.Duration `yaml:"overload_retry_after"`
+	ShutdownRetryAfter time.Duration `yaml:"shutdown_retry_after"`
+}
 
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"`
@@ -141,6 +153,8 @@ type Config struct {
 	// a final INVITE rejection (keyed by Call-ID + From-tag) for retries
 	// reusing the same identifiers.
 	DisableRejectedInviteCache bool `yaml:"disable_rejected_invite_cache"`
+	// ServiceUnavailable configures how new calls are refused while overloaded or shutting down.
+	ServiceUnavailable ServiceUnavailableConfig `yaml:"service_unavailable"`
 	// AddRecordRoute forces SIP to add Record-Route headers to the responses.
 	AddRecordRoute bool `yaml:"add_record_route"`
 
@@ -218,6 +232,8 @@ func (c *Config) Init() error {
 	} else if c.RTPDrainingDuration < 0 {
 		c.RTPDrainingDuration = 0 // disabled
 	}
+	c.ServiceUnavailable.OverloadRetryAfter = retryAfterOrDefault(c.ServiceUnavailable.OverloadRetryAfter, DefaultOverloadRetryAfter)
+	c.ServiceUnavailable.ShutdownRetryAfter = retryAfterOrDefault(c.ServiceUnavailable.ShutdownRetryAfter, DefaultShutdownRetryAfter)
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9
 	}
@@ -235,6 +251,17 @@ func (c *Config) Init() error {
 	}
 
 	return nil
+}
+
+// retryAfterOrDefault returns def for zero, 0 (no header) for a negative value, and v otherwise.
+func retryAfterOrDefault(v, def time.Duration) time.Duration {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return 0
+	}
+	return v
 }
 
 func (c *Config) InitLogger(values ...interface{}) error {

@@ -585,6 +585,26 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	state.Flush()
 	state.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, authResultName(r.Result)))
 
+	// An overloaded or stopping service refuses new calls with a 503 and a
+	// Retry-After, so that the sender retries on another server. Re-INVITEs
+	// returned above and are not affected. The check runs after the auth lookup,
+	// so only a sender that matched a trunk sees the 503 (see HideInboundPort).
+	// The refusal is not cached, unlike RespondAndDrop: a cached rejection is
+	// replayed to every later INVITE of the dialog, also to a retry with
+	// credentials or to a retry once the service accepts calls again.
+	unavailable := cm.unavailable()
+	refuseUnavailable := func() error {
+		rejectInvite(unavailable.term)
+		log.Infow("Rejecting inbound, service unavailable",
+			"reason", unavailable.reason, "retryAfter", unavailable.retryAfter)
+		if err := tx.Respond(newUnavailableResponse(req, unavailable)); err == nil {
+			cc.setLastStatus(sip.StatusServiceUnavailable, unavailable.reason)
+			cc.emitRejected(sip.StatusServiceUnavailable, unavailable.reason)
+		}
+		cc.Drop()
+		return psrpc.NewErrorf(psrpc.Unavailable, "service unavailable: %s", unavailable.reason)
+	}
+
 	switch r.Result {
 	case AuthDrop:
 		rejectInvite(stats.ClientError("flood"))
@@ -632,6 +652,11 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		callInfo.stopChallengeTimer()
 		callInfo.countInvite(log, req)
 		status, authHeader := cm.handleInviteAuth(log, req, r.Auth)
+		if unavailable != nil && status.Code == sip.StatusProxyAuthRequired {
+			// A challenge would start a new call. Valid credentials answer a
+			// challenge that was already sent, and that call continues below.
+			return refuseUnavailable()
+		}
 		switch status.Code {
 		case sip.StatusOK:
 			// No issue encountered. Proceed with call setup. Don't send 200 here.
@@ -679,6 +704,9 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
 	case AuthAccept:
+		if unavailable != nil {
+			return refuseUnavailable()
+		}
 		cm.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
 	}
@@ -691,6 +719,15 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	// An out-of-dialog OPTIONS probes whether we take new calls, so it gets the
+	// same 503 as a new INVITE. An in-dialog OPTIONS is a keepalive of a call in
+	// progress, which must not be torn down, so it is always answered with 200.
+	if isOutOfDialog(req) {
+		if u := cm.unavailable(); u != nil {
+			_ = tx.Respond(newUnavailableResponse(req, u))
+			return
+		}
+	}
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
